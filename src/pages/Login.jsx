@@ -1,69 +1,71 @@
-import { useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { signIn } from '../lib/auth-client'
+import { useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { signIn } from '../lib/authClient';
 
 export default function Login() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  const redirectTo = location.state?.from ?? '/'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    setSubmitting(true)
-    setError(null)
+    e.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
 
-    const { error: signInError } = await signIn.email({ email, password })
+    const { error: signInError } = await signIn.email({ email, password });
 
+    setIsSubmitting(false);
     if (signInError) {
-      setError(signInError.message ?? 'Could not sign in.')
-      setSubmitting(false)
-      return
+      setError(signInError.message || 'Invalid email or password.');
+      return;
     }
 
-    navigate(redirectTo, { replace: true })
-  }
+    navigate(searchParams.get('redirect') || '/');
+  };
 
   return (
     <div className="page">
-      <div className="auth-card">
-        <h1>👋 Welcome Back</h1>
-        <form onSubmit={handleSubmit}>
-          <div className="form-field">
-            <label htmlFor="email">Email</label>
+      <div className="checkout-panel auth-panel">
+        <h1>Sign in</h1>
+        <form className="checkout-form" onSubmit={handleSubmit} noValidate>
+          <label>
+            Email
             <input
-              id="email"
               type="email"
-              required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="jane@example.com"
-            />
-          </div>
-          <div className="form-field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
               required
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              required
             />
-          </div>
+          </label>
+
           {error && <p className="field-error">{error}</p>}
-          <button className="btn btn-primary btn-block" type="submit" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign In'}
+
+          <button type="submit" className="btn btn--primary btn--full" disabled={isSubmitting}>
+            {isSubmitting ? (
+              <>
+                <span className="spinner" aria-hidden="true" /> Signing in…
+              </>
+            ) : (
+              'Sign in'
+            )}
           </button>
         </form>
-        <p className="auth-switch">
-          Don't have an account? <Link to="/signup">Sign up</Link>
+        <p className="auth-panel__switch">
+          Don't have an account? <Link to="/signup">Create one</Link>
         </p>
       </div>
     </div>
-  )
+  );
 }

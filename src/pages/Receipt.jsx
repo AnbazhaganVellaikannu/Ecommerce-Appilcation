@@ -1,120 +1,153 @@
-import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { getOrder } from '../context/CartContext'
+import { useEffect, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 
 export default function Receipt() {
-  const { orderId } = useParams()
-  const [order, setOrder] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const { orderId } = useParams();
+  const [order, setOrder] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    getOrder(orderId).then((data) => {
-      if (!cancelled) {
-        setOrder(data)
-        setLoading(false)
-      }
-    })
+    let cancelled = false;
+    setLoading(true);
+    setNotFound(false);
+
+    fetch(`/api/orders/${orderId}`)
+      .then(async (res) => {
+        if (cancelled) return;
+        if (res.status === 404) {
+          setNotFound(true);
+          return;
+        }
+        if (!res.ok) throw new Error('Failed to load order');
+        setOrder(await res.json());
+      })
+      .catch(() => {
+        if (!cancelled) setNotFound(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
     return () => {
-      cancelled = true
-    }
-  }, [orderId])
+      cancelled = true;
+    };
+  }, [orderId]);
 
   if (loading) {
     return (
       <div className="page">
-        <p>Loading receipt…</p>
+        <p className="empty-state">Loading your receipt…</p>
       </div>
-    )
+    );
   }
 
-  if (!order) {
+  if (notFound || !order) {
     return (
       <div className="page">
-        <div className="empty-state">
-          <p className="empty-emoji">🧾</p>
-          <h2>Receipt not found</h2>
-          <p>We couldn't find an order with that ID.</p>
-          <Link className="btn btn-primary" to="/">
-            Back to Shop
-          </Link>
-        </div>
+        <h1>Order not found</h1>
+        <p>
+          <Link to="/">Return to shop</Link>
+        </p>
       </div>
-    )
+    );
   }
 
-  const orderDate = new Date(order.date)
+  const orderDate = new Date(order.createdAt);
 
   return (
     <div className="page">
-      <div className="receipt">
-        <div className="receipt-header">
-          <p className="receipt-check">✅</p>
-          <h1>Payment Successful</h1>
-          <p>Thanks for your order! Here's your receipt.</p>
-        </div>
+      <div className="confirmation no-print">
+        <div className="confirmation__icon">✓</div>
+        <h1>Thank you, {order.shipping.name.split(' ')[0]}!</h1>
+        <p>Your payment was successful and your order is confirmed.</p>
+      </div>
 
-        <div className="receipt-meta">
+      <div className="receipt" id="receipt">
+        <div className="receipt__header">
           <div>
-            <span className="receipt-label">Order ID</span>
-            <span>{order.id}</span>
+            <span className="receipt__brand">Grocery Department Store</span>
+            <p className="receipt__tagline">Fresh groceries, everyday essentials.</p>
           </div>
-          <div>
-            <span className="receipt-label">Date</span>
-            <span>{orderDate.toLocaleString()}</span>
-          </div>
-          <div>
-            <span className="receipt-label">Card</span>
-            <span>•••• {order.cardLast4}</span>
-          </div>
-        </div>
-
-        {order.shippingInfo && (
-          <div className="receipt-shipping">
-            <span className="receipt-label">Shipping to</span>
+          <div className="receipt__meta">
             <p>
-              {order.shippingInfo.fullName}
-              <br />
-              {order.shippingInfo.address}, {order.shippingInfo.city} {order.shippingInfo.zip}
+              <strong>Order ID:</strong> {order.id}
+            </p>
+            <p>
+              <strong>Date:</strong> {orderDate.toLocaleDateString()}{' '}
+              {orderDate.toLocaleTimeString()}
             </p>
           </div>
-        )}
-
-        <div className="receipt-items">
-          {order.items.map((item) => (
-            <div className="summary-row" key={item.id}>
-              <span>
-                {item.emoji} {item.name} × {item.quantity}
-              </span>
-              <span>${(item.price * item.quantity).toFixed(2)}</span>
-            </div>
-          ))}
         </div>
 
-        <hr />
+        <div className="receipt__section">
+          <h3>Items</h3>
+          <table className="receipt__table">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {order.items.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.name}</td>
+                  <td>{item.qty}</td>
+                  <td>${item.price.toFixed(2)}</td>
+                  <td>${(item.price * item.qty).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
 
-        <div className="summary-row">
-          <span>Subtotal</span>
-          <span>${order.subtotal.toFixed(2)}</span>
-        </div>
-        <div className="summary-row">
-          <span>Shipping</span>
-          <span>{order.shipping === 0 ? 'Free' : `$${order.shipping.toFixed(2)}`}</span>
-        </div>
-        <div className="summary-row">
-          <span>Tax</span>
-          <span>${order.tax.toFixed(2)}</span>
-        </div>
-        <div className="summary-row summary-total">
-          <span>Total Paid</span>
-          <span>${order.total.toFixed(2)}</span>
+        <div className="receipt__totals">
+          <div className="cart-summary__row">
+            <span>Subtotal</span>
+            <span>${order.subtotal.toFixed(2)}</span>
+          </div>
+          <div className="cart-summary__row">
+            <span>Tax</span>
+            <span>${order.tax.toFixed(2)}</span>
+          </div>
+          <div className="cart-summary__row cart-summary__row--total">
+            <span>Total paid</span>
+            <span>${order.total.toFixed(2)}</span>
+          </div>
         </div>
 
-        <Link className="btn btn-primary btn-block" to="/">
-          Continue Shopping
+        <div className="receipt__grid">
+          <div className="receipt__section">
+            <h3>Payment method</h3>
+            <p>Card ending in {order.payment.last4}</p>
+            <p>{order.payment.cardName}</p>
+          </div>
+          <div className="receipt__section">
+            <h3>Shipping to</h3>
+            <p>{order.shipping.name}</p>
+            <p>{order.shipping.address}</p>
+            <p>
+              {order.shipping.city}, {order.shipping.zip}
+            </p>
+          </div>
+        </div>
+
+        <p className="receipt__footer">
+          Thank you for shopping with Grocery Department Store!
+        </p>
+      </div>
+
+      <div className="confirmation-actions no-print">
+        <button className="btn btn--secondary" onClick={() => window.print()}>
+          Print receipt
+        </button>
+        <Link to="/" className="btn btn--primary">
+          Continue shopping
         </Link>
       </div>
     </div>
-  )
+  );
 }

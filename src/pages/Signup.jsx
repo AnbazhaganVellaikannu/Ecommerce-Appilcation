@@ -1,81 +1,86 @@
-import { useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { signUp } from '../lib/auth-client'
+import { useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { signUp } from '../lib/authClient';
 
 export default function Signup() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  const redirectTo = location.state?.from ?? '/'
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    setSubmitting(true)
-    setError(null)
+    e.preventDefault();
+    setError(null);
 
-    const { error: signUpError } = await signUp.email({ name, email, password })
-
-    if (signUpError) {
-      setError(signUpError.message ?? 'Could not create account.')
-      setSubmitting(false)
-      return
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
     }
 
-    navigate(redirectTo, { replace: true })
-  }
+    setIsSubmitting(true);
+    const { error: signUpError } = await signUp.email({ name, email, password });
+
+    setIsSubmitting(false);
+    if (signUpError) {
+      setError(signUpError.message || 'Could not create your account.');
+      return;
+    }
+
+    navigate(searchParams.get('redirect') || '/');
+  };
 
   return (
     <div className="page">
-      <div className="auth-card">
-        <h1>✨ Create Account</h1>
-        <form onSubmit={handleSubmit}>
-          <div className="form-field">
-            <label htmlFor="name">Name</label>
+      <div className="checkout-panel auth-panel">
+        <h1>Create an account</h1>
+        <form className="checkout-form" onSubmit={handleSubmit} noValidate>
+          <label>
+            Full name
             <input
-              id="name"
-              required
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Jane Doe"
-            />
-          </div>
-          <div className="form-field">
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
               required
+            />
+          </label>
+          <label>
+            Email
+            <input
+              type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="jane@example.com"
-            />
-          </div>
-          <div className="form-field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
               required
-              minLength={8}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 8 characters"
+              required
+              minLength={8}
             />
-          </div>
+          </label>
+
           {error && <p className="field-error">{error}</p>}
-          <button className="btn btn-primary btn-block" type="submit" disabled={submitting}>
-            {submitting ? 'Creating account…' : 'Sign Up'}
+
+          <button type="submit" className="btn btn--primary btn--full" disabled={isSubmitting}>
+            {isSubmitting ? (
+              <>
+                <span className="spinner" aria-hidden="true" /> Creating account…
+              </>
+            ) : (
+              'Create account'
+            )}
           </button>
         </form>
-        <p className="auth-switch">
+        <p className="auth-panel__switch">
           Already have an account? <Link to="/login">Sign in</Link>
         </p>
       </div>
     </div>
-  )
+  );
 }

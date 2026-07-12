@@ -1,97 +1,97 @@
-import { Link, useNavigate } from 'react-router-dom'
-import { useCart } from '../context/CartContext'
+import { Link, useNavigate } from 'react-router-dom';
+import { useCart } from '../context/CartContext';
 
 export default function Cart() {
-  const { cartItems, subtotal, shipping, tax, total, getAvailable, incrementQty, decrementQty, removeFromCart } =
-    useCart()
-  const navigate = useNavigate()
+  const { cartDetails, subtotal, tax, total, updateQty, removeFromCart, clearCart } =
+    useCart();
+  const navigate = useNavigate();
 
-  if (cartItems.length === 0) {
+  if (cartDetails.length === 0) {
     return (
       <div className="page">
-        <div className="empty-state">
-          <p className="empty-emoji">🛒</p>
-          <h2>Your cart is empty</h2>
-          <p>Add some items from the shop to get started.</p>
-          <Link className="btn btn-primary" to="/">
-            Browse Products
-          </Link>
-        </div>
+        <h1>Your cart</h1>
+        <p className="empty-state">
+          Your cart is empty. <Link to="/">Continue shopping</Link>.
+        </p>
       </div>
-    )
+    );
   }
 
   return (
     <div className="page">
-      <div className="page-header">
-        <h1>Your Cart</h1>
-      </div>
-
+      <h1>Your cart</h1>
       <div className="cart-layout">
-        <div className="cart-list">
-          {cartItems.map(({ product, quantity }) => (
-            <div className="cart-row" key={product.id}>
-              <div className="cart-row-image">{product.emoji}</div>
-              <div className="cart-row-info">
-                <h3>{product.name}</h3>
-                <div className="cart-row-price">${product.price.toFixed(2)} each</div>
+        <ul className="cart-list">
+          {cartDetails.map((item) => (
+            <li key={item.id} className="cart-item">
+              <img src={item.image} alt={item.name} />
+              <div className="cart-item__info">
+                <h3>{item.name}</h3>
+                <p className="cart-item__price">${item.price.toFixed(2)} each</p>
+                {item.availableStock === 0 && (
+                  <p className="cart-item__stock-hint">Max available quantity reached</p>
+                )}
               </div>
-              <div className="stepper">
+              <div className="cart-item__qty">
                 <button
-                  className="stepper-btn"
-                  onClick={() => decrementQty(product.id)}
-                  aria-label={`Decrease quantity of ${product.name}`}
+                  onClick={() => updateQty(item.id, item.qty - 1)}
+                  aria-label={`Decrease quantity of ${item.name}`}
                 >
-                  −
+                  -
                 </button>
-                <span className="stepper-qty">{quantity}</span>
+                <input
+                  type="number"
+                  min="0"
+                  value={item.qty}
+                  onChange={(e) => updateQty(item.id, Number(e.target.value))}
+                  aria-label={`Quantity of ${item.name}`}
+                />
                 <button
-                  className="stepper-btn"
-                  onClick={() => incrementQty(product.id)}
-                  disabled={getAvailable(product.id) <= 0}
-                  aria-label={`Increase quantity of ${product.name}`}
+                  onClick={() => updateQty(item.id, item.qty + 1)}
+                  disabled={item.availableStock === 0}
+                  aria-label={`Increase quantity of ${item.name}`}
                 >
                   +
                 </button>
               </div>
-              <div className="cart-row-total">${(product.price * quantity).toFixed(2)}</div>
+              <div className="cart-item__total">
+                ${(item.price * item.qty).toFixed(2)}
+              </div>
               <button
-                className="btn-remove"
-                onClick={() => removeFromCart(product.id)}
-                aria-label={`Remove ${product.name} from cart`}
+                className="btn btn--text"
+                onClick={() => removeFromCart(item.id)}
               >
-                ✕
+                Remove
               </button>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
 
         <div className="cart-summary">
-          <h2>Order Summary</h2>
-          <div className="summary-row">
+          <h2>Order summary</h2>
+          <div className="cart-summary__row">
             <span>Subtotal</span>
             <span>${subtotal.toFixed(2)}</span>
           </div>
-          <div className="summary-row">
-            <span>Shipping</span>
-            <span>{shipping === 0 ? 'Free' : `$${shipping.toFixed(2)}`}</span>
-          </div>
-          <div className="summary-row">
-            <span>Tax</span>
+          <div className="cart-summary__row">
+            <span>Estimated tax</span>
             <span>${tax.toFixed(2)}</span>
           </div>
-          <div className="summary-row summary-total">
+          <div className="cart-summary__row cart-summary__row--total">
             <span>Total</span>
             <span>${total.toFixed(2)}</span>
           </div>
-          <button className="btn btn-primary btn-block" onClick={() => navigate('/checkout')}>
-            Proceed to Checkout
+          <button
+            className="btn btn--primary btn--full"
+            onClick={() => navigate('/checkout')}
+          >
+            Proceed to checkout
           </button>
-          <Link className="btn-link" to="/">
-            Continue Shopping
-          </Link>
+          <button className="btn btn--text btn--full" onClick={clearCart}>
+            Clear cart
+          </button>
         </div>
       </div>
     </div>
-  )
+  );
 }

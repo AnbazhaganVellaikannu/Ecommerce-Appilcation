@@ -1,221 +1,181 @@
-import { useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
-import { useCart } from '../context/CartContext'
-import { useSession } from '../lib/auth-client'
+import { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { useCart } from '../context/CartContext';
+import { useSession } from '../lib/authClient';
+import Stepper from '../components/Stepper';
+import ReviewStep from '../components/checkout/ReviewStep';
+import ShippingStep from '../components/checkout/ShippingStep';
+import PaymentStep from '../components/checkout/PaymentStep';
 
-const initialShipping = { fullName: '', address: '', city: '', zip: '' }
-const initialPayment = { cardName: '', cardNumber: '', expiry: '', cvv: '' }
+const STEPS = ['Review', 'Shipping', 'Payment'];
 
-function formatCardNumber(value) {
-  return value
-    .replace(/[^0-9]/g, '')
-    .slice(0, 16)
-    .replace(/(.{4})/g, '$1 ')
-    .trim()
+const initialShipping = { name: '', email: '', address: '', city: '', zip: '' };
+const initialPayment = { cardName: '', cardNumber: '', expiry: '', cvc: '' };
+
+function validateShipping(form) {
+  const errs = {};
+  if (!form.name.trim()) errs.name = 'Name is required';
+  if (!/^\S+@\S+\.\S+$/.test(form.email)) errs.email = 'Valid email is required';
+  if (!form.address.trim()) errs.address = 'Address is required';
+  if (!form.city.trim()) errs.city = 'City is required';
+  if (!/^\d{5}(-\d{4})?$/.test(form.zip)) errs.zip = 'Valid ZIP code is required';
+  return errs;
 }
 
-function formatExpiry(value) {
-  const digits = value.replace(/[^0-9]/g, '').slice(0, 4)
-  if (digits.length <= 2) return digits
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`
+function validatePayment(form) {
+  const errs = {};
+  if (!form.cardName.trim()) errs.cardName = 'Name on card is required';
+  if (!/^\d{13,19}$/.test(form.cardNumber.replace(/\s/g, '')))
+    errs.cardNumber = 'Valid card number is required';
+  if (!/^(0[1-9]|1[0-2])\/\d{2}$/.test(form.expiry.trim()))
+    errs.expiry = 'Use MM/YY format';
+  if (!/^\d{3,4}$/.test(form.cvc.trim())) errs.cvc = 'Valid CVC is required';
+  return errs;
 }
 
 export default function Checkout() {
-  const { cartItems, subtotal, shipping, tax, total, completeOrder } = useCart()
-  const { data: session, isPending: sessionPending } = useSession()
-  const navigate = useNavigate()
+  const { cartDetails, subtotal, tax, total, completeOrder } = useCart();
+  const { data: session } = useSession();
+  const [step, setStep] = useState(1);
+  const [shippingForm, setShippingForm] = useState(initialShipping);
+  const [shippingErrors, setShippingErrors] = useState({});
+  const [paymentForm, setPaymentForm] = useState(initialPayment);
+  const [paymentErrors, setPaymentErrors] = useState({});
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const navigate = useNavigate();
 
-  const [shippingInfo, setShippingInfo] = useState(initialShipping)
-  const [paymentInfo, setPaymentInfo] = useState(initialPayment)
-  const [errors, setErrors] = useState({})
-  const [processing, setProcessing] = useState(false)
-  const [submitError, setSubmitError] = useState(null)
+  useEffect(() => {
+    if (!session) return;
+    setShippingForm((prev) => ({
+      ...prev,
+      name: prev.name || session.user.name || '',
+      email: prev.email || session.user.email || '',
+    }));
+  }, [session]);
 
-  if (sessionPending) {
+  if (cartDetails.length === 0 && !isProcessing) {
     return (
       <div className="page">
-        <p>Loading…</p>
+        <h1>Checkout</h1>
+        <p className="empty-state">
+          Your cart is empty. <Link to="/">Continue shopping</Link>.
+        </p>
       </div>
-    )
+    );
   }
 
-  if (!session) {
-    return <Navigate to="/login" replace state={{ from: '/checkout' }} />
-  }
+  const handleShippingChange = (e) => {
+    setShippingForm({ ...shippingForm, [e.target.name]: e.target.value });
+  };
 
-  if (cartItems.length === 0 && !processing) {
-    return <Navigate to="/cart" replace />
-  }
+  const handlePaymentChange = (e) => {
+    setPaymentForm({ ...paymentForm, [e.target.name]: e.target.value });
+  };
 
-  const updateShipping = (field) => (e) =>
-    setShippingInfo((s) => ({ ...s, [field]: e.target.value }))
+  const handleShippingContinue = () => {
+    const errs = validateShipping(shippingForm);
+    setShippingErrors(errs);
+    if (Object.keys(errs).length === 0) setStep(3);
+  };
 
-  const updatePayment = (field, formatter) => (e) => {
-    const raw = e.target.value
-    setPaymentInfo((p) => ({ ...p, [field]: formatter ? formatter(raw) : raw }))
-  }
+  const handlePay = async () => {
+    const errs = validatePayment(paymentForm);
+    setPaymentErrors(errs);
+    if (Object.keys(errs).length > 0) return;
 
-  const validate = () => {
-    const nextErrors = {}
-    if (!shippingInfo.fullName.trim()) nextErrors.fullName = 'Required'
-    if (!shippingInfo.address.trim()) nextErrors.address = 'Required'
-    if (!shippingInfo.city.trim()) nextErrors.city = 'Required'
-    if (!/^\d{5}(-\d{4})?$/.test(shippingInfo.zip.trim())) nextErrors.zip = 'Invalid ZIP code'
-
-    if (!paymentInfo.cardName.trim()) nextErrors.cardName = 'Required'
-    if (paymentInfo.cardNumber.replace(/\s/g, '').length !== 16)
-      nextErrors.cardNumber = 'Enter a 16-digit card number'
-    if (!/^\d{2}\/\d{2}$/.test(paymentInfo.expiry)) nextErrors.expiry = 'Use MM/YY format'
-    if (!/^\d{3,4}$/.test(paymentInfo.cvv)) nextErrors.cvv = 'Invalid CVV'
-
-    setErrors(nextErrors)
-    return Object.keys(nextErrors).length === 0
-  }
-
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    if (!validate()) return
-
-    setProcessing(true)
-    setSubmitError(null)
+    setSubmitError(null);
+    setIsProcessing(true);
     try {
-      const order = await completeOrder({ paymentInfo, shippingInfo })
-      navigate(`/receipt/${order.id}`, { replace: true })
+      const order = await completeOrder({
+        shipping: { ...shippingForm },
+        payment: {
+          method: 'card',
+          cardName: paymentForm.cardName,
+          last4: paymentForm.cardNumber.replace(/\s/g, '').slice(-4),
+        },
+      });
+      navigate(`/receipt/${order.id}`);
     } catch (err) {
-      setSubmitError(err.message)
-      setProcessing(false)
+      if (err.status === 401) {
+        navigate('/login?redirect=%2Fcheckout');
+        return;
+      }
+      if (err.status === 409 && err.shortfalls) {
+        const details = err.shortfalls
+          .map((s) => `${s.productId} (only ${s.available} left)`)
+          .join(', ');
+        setSubmitError(`Some items sold out while you were checking out: ${details}.`);
+      } else {
+        setSubmitError(err.message || 'Something went wrong placing your order.');
+      }
+      setIsProcessing(false);
     }
-  }
+  };
 
   return (
     <div className="page">
-      <div className="page-header">
-        <h1>Checkout</h1>
-      </div>
+      <h1>Checkout</h1>
+      <Stepper steps={STEPS} currentStep={step} />
 
       <div className="checkout-layout">
-        <form className="checkout-form" onSubmit={handleSubmit}>
-          <section>
-            <h2>🚚 Shipping Information</h2>
-            <div className="form-field">
-              <label htmlFor="fullName">Full Name</label>
-              <input
-                id="fullName"
-                value={shippingInfo.fullName}
-                onChange={updateShipping('fullName')}
-                placeholder="Jane Doe"
-              />
-              {errors.fullName && <span className="field-error">{errors.fullName}</span>}
-            </div>
-            <div className="form-field">
-              <label htmlFor="address">Address</label>
-              <input
-                id="address"
-                value={shippingInfo.address}
-                onChange={updateShipping('address')}
-                placeholder="123 Main St"
-              />
-              {errors.address && <span className="field-error">{errors.address}</span>}
-            </div>
-            <div className="form-row">
-              <div className="form-field">
-                <label htmlFor="city">City</label>
-                <input id="city" value={shippingInfo.city} onChange={updateShipping('city')} placeholder="Springfield" />
-                {errors.city && <span className="field-error">{errors.city}</span>}
-              </div>
-              <div className="form-field">
-                <label htmlFor="zip">ZIP Code</label>
-                <input id="zip" value={shippingInfo.zip} onChange={updateShipping('zip')} placeholder="12345" />
-                {errors.zip && <span className="field-error">{errors.zip}</span>}
-              </div>
-            </div>
-          </section>
-
-          <section>
-            <h2>💳 Payment Details</h2>
-            <p className="dummy-note">This is a mock payment form — no real card is charged.</p>
-            <div className="form-field">
-              <label htmlFor="cardName">Name on Card</label>
-              <input
-                id="cardName"
-                value={paymentInfo.cardName}
-                onChange={updatePayment('cardName')}
-                placeholder="Jane Doe"
-              />
-              {errors.cardName && <span className="field-error">{errors.cardName}</span>}
-            </div>
-            <div className="form-field">
-              <label htmlFor="cardNumber">Card Number</label>
-              <input
-                id="cardNumber"
-                value={paymentInfo.cardNumber}
-                onChange={updatePayment('cardNumber', formatCardNumber)}
-                placeholder="4242 4242 4242 4242"
-                inputMode="numeric"
-              />
-              {errors.cardNumber && <span className="field-error">{errors.cardNumber}</span>}
-            </div>
-            <div className="form-row">
-              <div className="form-field">
-                <label htmlFor="expiry">Expiry (MM/YY)</label>
-                <input
-                  id="expiry"
-                  value={paymentInfo.expiry}
-                  onChange={updatePayment('expiry', formatExpiry)}
-                  placeholder="12/28"
-                  inputMode="numeric"
-                />
-                {errors.expiry && <span className="field-error">{errors.expiry}</span>}
-              </div>
-              <div className="form-field">
-                <label htmlFor="cvv">CVV</label>
-                <input
-                  id="cvv"
-                  value={paymentInfo.cvv}
-                  onChange={updatePayment('cvv', (v) => v.replace(/[^0-9]/g, '').slice(0, 4))}
-                  placeholder="123"
-                  inputMode="numeric"
-                />
-                {errors.cvv && <span className="field-error">{errors.cvv}</span>}
-              </div>
-            </div>
-          </section>
-
-          {submitError && <p className="field-error">{submitError}</p>}
-          <button className="btn btn-primary btn-block" type="submit" disabled={processing}>
-            {processing ? 'Processing Payment…' : `Pay $${total.toFixed(2)}`}
-          </button>
-        </form>
+        {step === 1 && (
+          <ReviewStep
+            cartDetails={cartDetails}
+            subtotal={subtotal}
+            tax={tax}
+            total={total}
+            onContinue={() => setStep(2)}
+          />
+        )}
+        {step === 2 && (
+          <ShippingStep
+            form={shippingForm}
+            errors={shippingErrors}
+            onChange={handleShippingChange}
+            onBack={() => setStep(1)}
+            onContinue={handleShippingContinue}
+          />
+        )}
+        {step === 3 && (
+          <PaymentStep
+            form={paymentForm}
+            errors={paymentErrors}
+            onChange={handlePaymentChange}
+            onBack={() => setStep(2)}
+            onSubmit={handlePay}
+            isProcessing={isProcessing}
+            submitError={submitError}
+            total={total}
+          />
+        )}
 
         <div className="cart-summary">
-          <h2>Order Summary</h2>
-          {cartItems.map(({ product, quantity }) => (
-            <div className="summary-row" key={product.id}>
-              <span>
-                {product.emoji} {product.name} × {quantity}
-              </span>
-              <span>${(product.price * quantity).toFixed(2)}</span>
-            </div>
-          ))}
-          <hr />
-          <div className="summary-row">
+          <h2>Order summary</h2>
+          <ul className="summary-items">
+            {cartDetails.map((item) => (
+              <li key={item.id}>
+                <span>
+                  {item.name} × {item.qty}
+                </span>
+                <span>${(item.price * item.qty).toFixed(2)}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="cart-summary__row">
             <span>Subtotal</span>
             <span>${subtotal.toFixed(2)}</span>
           </div>
-          <div className="summary-row">
-            <span>Shipping</span>
-            <span>{shipping === 0 ? 'Free' : `$${shipping.toFixed(2)}`}</span>
-          </div>
-          <div className="summary-row">
-            <span>Tax</span>
+          <div className="cart-summary__row">
+            <span>Estimated tax</span>
             <span>${tax.toFixed(2)}</span>
           </div>
-          <div className="summary-row summary-total">
+          <div className="cart-summary__row cart-summary__row--total">
             <span>Total</span>
             <span>${total.toFixed(2)}</span>
           </div>
         </div>
       </div>
     </div>
-  )
+  );
 }

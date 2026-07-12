@@ -1,0 +1,20 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: push this repo to GitHub, then in the Render dashboard choose
+# "New +" -> "Blueprint" and select the repo. Render will read this file
+# and prompt you for the `sync: false` secret below (DATABASE_URL).
+services:
+  - name: grocery-department-store
+    type: web
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      # Paste your Neon connection string here when prompted during setup.
+      - key: DATABASE_URL
+        sync: false
+      # Render generates a random secure value for this automatically.
+      - key: BETTER_AUTH_SECRET
+        generateValue: true

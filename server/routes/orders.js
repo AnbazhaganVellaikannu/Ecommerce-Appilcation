@@ -1,139 +1,125 @@
-import { randomUUID } from 'node:crypto'
-import { Router } from 'express'
-import { query, withTransaction } from '../db.js'
-import { requireAuth } from '../middleware/requireAuth.js'
+import { Router } from 'express';
+import { pool } from '../db.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 
-const router = Router()
+export const ordersRouter = Router();
 
-const TAX_RATE = 0.08
-const FREE_SHIPPING_THRESHOLD = 50
-const SHIPPING_FEE = 4.99
+const TAX_RATE = 0.07;
 
-router.post('/', requireAuth, async (req, res) => {
-  const { items, shippingInfo, paymentInfo } = req.body ?? {}
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
 
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'Order must include at least one item.' })
+function serializeOrder(row) {
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    items: row.items,
+    subtotal: Number(row.subtotal),
+    tax: Number(row.tax),
+    total: Number(row.total),
+    shipping: row.shipping,
+    payment: row.payment,
+  };
+}
+
+ordersRouter.post('/', requireAuth, async (req, res) => {
+  const { items, shipping, payment } = req.body ?? {};
+  if (!Array.isArray(items) || items.length === 0 || !shipping || !payment) {
+    return res.status(400).json({ error: 'Malformed order payload' });
   }
   for (const item of items) {
-    if (!item?.productId || !Number.isInteger(item.quantity) || item.quantity <= 0) {
-      return res.status(400).json({ error: 'Each item needs a productId and a positive integer quantity.' })
+    if (!item || typeof item.productId !== 'string' || !(Number(item.qty) > 0)) {
+      return res.status(400).json({ error: 'Malformed order item' });
     }
   }
 
+  const client = await pool.connect();
   try {
-    const order = await withTransaction(async (client) => {
-      const productIds = items.map((i) => i.productId)
-      const { rows: products } = await client.query(
-        'SELECT id, name, emoji, price, stock FROM products WHERE id = ANY($1) FOR UPDATE',
-        [productIds]
-      )
-      const productById = new Map(products.map((p) => [p.id, p]))
+    await client.query('BEGIN');
 
-      const orderItems = []
-      for (const { productId, quantity } of items) {
-        const product = productById.get(productId)
-        if (!product) {
-          throw Object.assign(new Error(`Unknown product: ${productId}`), { status: 400 })
-        }
-        if (product.stock < quantity) {
-          throw Object.assign(
-            new Error(`Not enough stock for "${product.name}" (${product.stock} available).`),
-            { status: 409 }
-          )
-        }
-        orderItems.push({ product, quantity })
+    const lineItems = [];
+    const shortfalls = [];
+
+    for (const { productId, qty } of items) {
+      const { rows } = await client.query(
+        'SELECT id, name, price, stock FROM products WHERE id = $1 FOR UPDATE',
+        [productId]
+      );
+      if (rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Product not found: ${productId}` });
       }
-
-      const round2 = (n) => Math.round(n * 100) / 100
-      const subtotal = round2(orderItems.reduce((sum, i) => sum + i.quantity * Number(i.product.price), 0))
-      const shipping = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE
-      const tax = round2(subtotal * TAX_RATE)
-      const total = round2(subtotal + shipping + tax)
-      const orderId = `ORD-${randomUUID().split('-')[0].toUpperCase()}`
-      const cardLast4 = (paymentInfo?.cardNumber ?? '').replace(/\s/g, '').slice(-4)
-
-      await client.query(
-        `INSERT INTO orders (id, user_id, subtotal, shipping, tax, total, shipping_name, shipping_address, shipping_city, shipping_zip, card_last4)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          orderId,
-          req.user.id,
-          subtotal,
-          shipping,
-          tax,
-          total,
-          shippingInfo?.fullName ?? null,
-          shippingInfo?.address ?? null,
-          shippingInfo?.city ?? null,
-          shippingInfo?.zip ?? null,
-          cardLast4,
-        ]
-      )
-
-      for (const { product, quantity } of orderItems) {
-        await client.query(
-          `INSERT INTO order_items (order_id, product_id, name, emoji, price, quantity)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [orderId, product.id, product.name, product.emoji, product.price, quantity]
-        )
-        await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [quantity, product.id])
+      const product = rows[0];
+      const stock = Number(product.stock);
+      if (qty > stock) {
+        shortfalls.push({ productId, requested: qty, available: stock });
+        continue;
       }
+      lineItems.push({
+        id: product.id,
+        name: product.name,
+        price: Number(product.price),
+        qty: Number(qty),
+      });
+    }
 
-      return {
-        id: orderId,
-        date: new Date().toISOString(),
-        items: orderItems.map(({ product, quantity }) => ({
-          id: product.id,
-          name: product.name,
-          emoji: product.emoji,
-          price: Number(product.price),
-          quantity,
-        })),
+    if (shortfalls.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Insufficient stock', shortfalls });
+    }
+
+    for (const item of lineItems) {
+      await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [
+        item.qty,
+        item.id,
+      ]);
+    }
+
+    const subtotal = round2(lineItems.reduce((sum, i) => sum + i.price * i.qty, 0));
+    const tax = round2(subtotal * TAX_RATE);
+    const total = round2(subtotal + tax);
+    const orderId = `ORD-${Date.now()}`;
+
+    const { rows: orderRows } = await client.query(
+      `INSERT INTO orders (id, user_id, items, subtotal, tax, total, shipping, payment)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        orderId,
+        req.user.id,
+        JSON.stringify(lineItems),
         subtotal,
-        shipping,
         tax,
         total,
-        shippingInfo,
-        cardLast4,
-      }
-    })
+        JSON.stringify(shipping),
+        JSON.stringify(payment),
+      ]
+    );
 
-    res.status(201).json(order)
+    await client.query('COMMIT');
+    res.status(201).json(serializeOrder(orderRows[0]));
   } catch (err) {
-    const status = err.status ?? 500
-    if (status === 500) console.error(err)
-    res.status(status).json({ error: err.message ?? 'Failed to place order.' })
+    await client.query('ROLLBACK');
+    console.error('Failed to create order:', err);
+    res.status(500).json({ error: 'Failed to create order' });
+  } finally {
+    client.release();
   }
-})
+});
 
-router.get('/:id', requireAuth, async (req, res) => {
-  const { rows: orderRows } = await query('SELECT * FROM orders WHERE id = $1', [req.params.id])
-  const order = orderRows[0]
-  if (!order) return res.status(404).json({ error: 'Order not found.' })
-  if (order.user_id !== req.user.id) return res.status(403).json({ error: 'Not your order.' })
+ordersRouter.get('/', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC',
+    [req.user.id]
+  );
+  res.json(rows.map(serializeOrder));
+});
 
-  const { rows: items } = await query(
-    'SELECT product_id AS id, name, emoji, price, quantity FROM order_items WHERE order_id = $1 ORDER BY id',
-    [req.params.id]
-  )
-
-  res.json({
-    id: order.id,
-    date: order.created_at,
-    items: items.map((i) => ({ ...i, price: Number(i.price) })),
-    subtotal: Number(order.subtotal),
-    shipping: Number(order.shipping),
-    tax: Number(order.tax),
-    total: Number(order.total),
-    shippingInfo: {
-      fullName: order.shipping_name,
-      address: order.shipping_address,
-      city: order.shipping_city,
-      zip: order.shipping_zip,
-    },
-    cardLast4: order.card_last4,
-  })
-})
-
-export default router
+ordersRouter.get('/:id', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  if (rows.length === 0) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  res.json(serializeOrder(rows[0]));
+});

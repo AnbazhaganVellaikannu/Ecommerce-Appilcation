@@ -1,139 +1,164 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { loadJSON, saveJSON } from '../utils/storage'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 
-const CART_KEY = 'ecom_cart_v1'
+const TAX_RATE = 0.07;
 
-const CartContext = createContext(null)
+const CartContext = createContext(null);
 
 export function CartProvider({ children }) {
-  const [cart, setCart] = useState(() => loadJSON(CART_KEY, {}))
-  const [products, setProducts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
+  const [items, setItems] = useLocalStorage('ecom_cart', []);
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState(null);
 
-  const fetchProducts = async () => {
-    try {
-      const res = await fetch('/api/products')
-      if (!res.ok) throw new Error('Failed to load products')
-      setProducts(await res.json())
-      setLoadError(null)
-    } catch (err) {
-      setLoadError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
+  const fetchProducts = useCallback(async () => {
+    setProductsLoading(true);
+    setProductsError(null);
 
-  useEffect(() => {
-    fetchProducts()
-  }, [])
-
-  useEffect(() => {
-    saveJSON(CART_KEY, cart)
-  }, [cart])
-
-  const getStock = (id) => products.find((p) => p.id === id)?.stock ?? 0
-  const getAvailable = (id) => getStock(id) - (cart[id] || 0)
-
-  const addToCart = (id) => {
-    if (getAvailable(id) <= 0) return
-    setCart((c) => ({ ...c, [id]: (c[id] || 0) + 1 }))
-  }
-
-  const incrementQty = (id) => addToCart(id)
-
-  const decrementQty = (id) => {
-    setCart((c) => {
-      const nextQty = (c[id] || 0) - 1
-      if (nextQty <= 0) {
-        const { [id]: _removed, ...rest } = c
-        return rest
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch('/api/products');
+        if (!res.ok) throw new Error('Failed to load products');
+        setProducts(await res.json());
+        setProductsLoading(false);
+        return;
+      } catch (err) {
+        if (attempt === maxAttempts) {
+          setProductsError(err.message);
+          setProductsLoading(false);
+          return;
+        }
+        // The API server (Express/Neon) can take a moment to finish booting
+        // after the dev server starts — back off and retry before giving up.
+        await new Promise((resolve) => setTimeout(resolve, attempt * 700));
       }
-      return { ...c, [id]: nextQty }
-    })
-  }
+    }
+  }, []);
 
-  const removeFromCart = (id) => {
-    setCart((c) => {
-      const { [id]: _removed, ...rest } = c
-      return rest
-    })
-  }
+  useEffect(() => {
+    fetchProducts();
+  }, [fetchProducts]);
 
-  const clearCart = () => setCart({})
+  const qtyInCart = (productId) =>
+    items.find((i) => i.productId === productId)?.qty ?? 0;
 
-  const cartItems = useMemo(
-    () =>
-      Object.entries(cart)
-        .map(([id, quantity]) => {
-          const product = products.find((p) => p.id === id)
-          return product ? { product, quantity } : null
-        })
-        .filter(Boolean),
-    [cart, products]
-  )
+  const getAvailableStock = (productId) => {
+    const product = products.find((p) => p.id === productId);
+    if (!product) return 0;
+    return Math.max(product.stock - qtyInCart(productId), 0);
+  };
 
-  const cartCount = cartItems.reduce((sum, i) => sum + i.quantity, 0)
-  const subtotal = cartItems.reduce((sum, i) => sum + i.quantity * i.product.price, 0)
-  const shipping = cartItems.length === 0 || subtotal >= 50 ? 0 : 4.99
-  const tax = subtotal * 0.08
-  const total = subtotal + shipping + tax
+  const addToCart = (productId, qty = 1) => {
+    const available = getAvailableStock(productId);
+    if (available <= 0) return false;
+    const addQty = Math.min(qty, available);
 
-  const completeOrder = async ({ paymentInfo, shippingInfo }) => {
-    if (cartItems.length === 0) return null
+    setItems((prev) => {
+      const existing = prev.find((i) => i.productId === productId);
+      if (existing) {
+        return prev.map((i) =>
+          i.productId === productId ? { ...i, qty: i.qty + addQty } : i
+        );
+      }
+      return [...prev, { productId, qty: addQty }];
+    });
+    return true;
+  };
 
+  const updateQty = (productId, qty) => {
+    if (qty <= 0) {
+      removeFromCart(productId);
+      return;
+    }
+    const product = products.find((p) => p.id === productId);
+    const clamped = Math.min(qty, product?.stock ?? 0);
+    setItems((prev) =>
+      prev.map((i) => (i.productId === productId ? { ...i, qty: clamped } : i))
+    );
+  };
+
+  const removeFromCart = (productId) => {
+    setItems((prev) => prev.filter((i) => i.productId !== productId));
+  };
+
+  const clearCart = () => setItems([]);
+
+  const cartDetails = useMemo(() => {
+    return items
+      .map((i) => {
+        const product = products.find((p) => p.id === i.productId);
+        if (!product) return null;
+        return {
+          ...product,
+          qty: i.qty,
+          availableStock: Math.max(product.stock - i.qty, 0),
+        };
+      })
+      .filter(Boolean);
+  }, [items, products]);
+
+  const subtotal = useMemo(
+    () => cartDetails.reduce((sum, item) => sum + item.price * item.qty, 0),
+    [cartDetails]
+  );
+
+  const tax = useMemo(() => subtotal * TAX_RATE, [subtotal]);
+  const total = subtotal + tax;
+
+  const itemCount = useMemo(
+    () => items.reduce((sum, i) => sum + i.qty, 0),
+    [items]
+  );
+
+  const completeOrder = async ({ shipping, payment }) => {
     const res = await fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: cartItems.map(({ product, quantity }) => ({ productId: product.id, quantity })),
-        shippingInfo,
-        paymentInfo,
+        items: items.map((i) => ({ productId: i.productId, qty: i.qty })),
+        shipping,
+        payment,
       }),
-    })
+    });
 
-    const data = await res.json()
+    const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error || 'Failed to place order.')
+      const error = new Error(data.error || 'Failed to place order');
+      error.status = res.status;
+      error.shortfalls = data.shortfalls;
+      throw error;
     }
 
-    clearCart()
-    await fetchProducts()
-    return data
-  }
+    clearCart();
+    fetchProducts();
+    return data;
+  };
 
   const value = {
+    items,
     products,
-    loading,
-    loadError,
-    cart,
-    cartItems,
-    cartCount,
+    productsLoading,
+    productsError,
+    refetchProducts: fetchProducts,
+    cartDetails,
     subtotal,
-    shipping,
     tax,
     total,
-    getStock,
-    getAvailable,
+    itemCount,
     addToCart,
-    incrementQty,
-    decrementQty,
+    updateQty,
     removeFromCart,
     clearCart,
+    getAvailableStock,
     completeOrder,
-  }
+  };
 
-  return <CartContext.Provider value={value}>{children}</CartContext.Provider>
+  return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
 
 export function useCart() {
-  const ctx = useContext(CartContext)
-  if (!ctx) throw new Error('useCart must be used within a CartProvider')
-  return ctx
-}
-
-export async function getOrder(orderId) {
-  const res = await fetch(`/api/orders/${orderId}`)
-  if (!res.ok) return null
-  return res.json()
+  const ctx = useContext(CartContext);
+  if (!ctx) throw new Error('useCart must be used within a CartProvider');
+  return ctx;
 }
